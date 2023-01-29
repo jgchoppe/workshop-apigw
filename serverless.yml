@@ -1,0 +1,174 @@
+service: apigw-workshop
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  apiName: apigw-workshop-${param:name}
+  runtime: nodejs14.x
+  region: eu-west-1
+  environment:
+    REGION: "eu-west-1"
+    TODO_LIST_TABLE: "TODO_LIST_TABLE_${param:name}_${opt:stage, self:provider.stage, 'default'}"
+  # https://www.serverless.com/framework/docs/providers/aws/guide/iam#the-default-iam-role
+  iam:
+    role:
+      name: apigw-workshop-${param:name}-lambdaRole
+      statements:
+        - Effect: Allow
+          Action: 'dynamodb:*'
+          Resource:
+            - "Fn::GetAtt": [DynamoDBTasksTable, Arn]
+            - "Fn::Join": ["", [Fn::GetAtt: [DynamoDBTasksTable, Arn], "/*"]]
+
+functions:
+  hello:
+    handler: handler.hello
+    name: apigw-workshop-${param:name}-${sls:stage}-hello
+    events:
+      - http:
+          path: /hello
+          method: get
+          cors: true
+  authorized_hello:
+    handler: src/services/hello/authorized_handler.handler
+    name: apigw-workshop-${param:name}-${sls:stage}-authorized_hello
+    events:
+      - http:
+          path: /hello/user
+          method: get
+          cors: true
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: ApiGatewayAuthorizer
+  createTask:
+    handler: src/services/toDoList/functions/createTask/createTask.handler
+    name: apigw-workshop-${param:name}-${sls:stage}-createTask
+    events:
+      - http:
+          path: /tasks
+          method: post
+          cors: true
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: ApiGatewayAuthorizer
+  getTask:
+    handler: src/services/toDoList/functions/getTask/getTask.handler
+    name: apigw-workshop-${param:name}-${sls:stage}-getTask
+    events:
+      - http:
+          path: /tasks/{id}
+          method: get
+          cors: true
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: ApiGatewayAuthorizer
+  listTasks:
+    handler: src/services/toDoList/functions/listTasks/listTasks.handler
+    name: apigw-workshop-${param:name}-${sls:stage}-listTasks
+    events:
+      - http:
+          path: /tasks
+          method: get
+          cors: true
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: ApiGatewayAuthorizer
+  updateTaskStatus:
+    handler: src/services/toDoList/functions/updateTaskStatus/updateTaskStatus.handler
+    name: apigw-workshop-${param:name}-${sls:stage}-updateTaskStatus
+    events:
+      - http:
+          path: /tasks/{id}
+          method: put
+          cors: true
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: ApiGatewayAuthorizer
+  removeTask:
+    handler: src/services/toDoList/functions/removeTask/removeTask.handler
+    name: apigw-workshop-${param:name}-${sls:stage}-removeTask
+    events:
+      - http:
+          path: /tasks/{id}
+          method: delete
+          cors: true
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: ApiGatewayAuthorizer
+
+resources:
+  Resources:
+    CognitoUserPool:
+      Type: AWS::Cognito::UserPool
+      Properties:
+        MfaConfiguration: OFF
+        UserPoolName: "todo-list-pool-${param:name}-${opt:stage, self:provider.stage, 'default'}"
+        UsernameAttributes:
+          - "email"
+        Policies:
+          PasswordPolicy:
+            MinimumLength: 6
+            RequireLowercase: False
+            RequireNumbers: True
+            RequireSymbols: False
+            RequireUppercase: True
+        AccountRecoverySetting:
+          RecoveryMechanisms:
+            - Name: "verified_email"
+              Priority: 1
+        AutoVerifiedAttributes:
+          - "email"
+    CognitoUserPoolClient:
+      Type: AWS::Cognito::UserPoolClient
+      Properties:
+        ClientName: "todo-list-client-${param:name}-${opt:stage, self:provider.stage, 'default'}"
+        GenerateSecret: False
+        UserPoolId:
+          Ref: CognitoUserPool
+    ApiGatewayAuthorizer:
+      DependsOn:
+        - ApiGatewayRestApi
+      Type: AWS::ApiGateway::Authorizer
+      Properties:
+        Name: cognito-authorizer
+        IdentitySource: method.request.header.Authorization
+        RestApiId:
+          Ref: ApiGatewayRestApi
+        Type: COGNITO_USER_POOLS
+        ProviderARNs:
+          - Fn::GetAtt: [CognitoUserPool, Arn]
+    DynamoDBTasksTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: "TODO_LIST_TABLE_${param:name}_${opt:stage, self:provider.stage, 'default'}"
+        AttributeDefinitions:
+          - AttributeName: "PK"
+            AttributeType: "S"
+          - AttributeName: "SK"
+            AttributeType: "S"
+          - AttributeName: "taskId"
+            AttributeType: "S"
+          - AttributeName: "type"
+            AttributeType: "S"
+        KeySchema:
+          - AttributeName: "PK"
+            KeyType: "HASH"
+          - AttributeName: "SK"
+            KeyType: "RANGE"
+        GlobalSecondaryIndexes:
+          - IndexName: "GSI1-PK"
+            KeySchema:
+              - AttributeName: "type"
+                KeyType: "HASH"
+              - AttributeName: "taskId"
+                KeyType: "RANGE"
+            Projection:
+              ProjectionType: "ALL"
+        BillingMode: "PAY_PER_REQUEST"
